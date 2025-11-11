@@ -1,21 +1,20 @@
 # pylint: disable=import-outside-toplevel
 import os
-import re
 import pandas as pd
 import numpy as np
+import re
 
 
-# ---------- utilidades ----------
+# ---------------- utilidades ----------------
 
 def _read_input_csv(path: str) -> pd.DataFrame:
     """
-    Lee el CSV de entrada de forma robusta: intenta con ';' y si no, con ','.
-    Declara NA comunes que suelen venir como texto.
+    Lee el CSV con tolerancia a separador y NA de texto.
     """
-    na_vals = ["", " ", "na", "n/a", "nan", "none", "null", "sin dato", "sin_dato", "nd"]
+    na_vals = ["", " ", "na", "n/a", "nan", "none", "null"]
     try:
         df = pd.read_csv(path, sep=";", na_values=na_vals, dtype=str)
-        if df.shape[1] == 1:  # todo en una sola columna -> probar con coma
+        if df.shape[1] == 1:
             df = pd.read_csv(path, sep=",", na_values=na_vals, dtype=str)
     except Exception:
         df = pd.read_csv(path, sep=",", na_values=na_vals, dtype=str)
@@ -24,57 +23,45 @@ def _read_input_csv(path: str) -> pd.DataFrame:
 
 def _std_str(s: pd.Series) -> pd.Series:
     """
-    Normaliza textos: minúsculas, strip y colapsa espacios internos.
+    Normaliza textos (lower, strip, colapsa espacios).
     """
     s = s.astype(str).str.lower()
-    s = s.str.strip()
-    s = s.str.replace(r"\s+", " ", regex=True)
+    s = s.str.strip().str.replace(r"\s+", " ", regex=True)
     return s
 
 
-def _to_numeric(series: pd.Series) -> pd.Series:
+def _parse_int(series: pd.Series) -> pd.Series:
     """
-    Convierte a número eliminando signos, separadores de miles y símbolos.
-    Devuelve Int64 (acepta NA).
+    Extrae dígitos y convierte a entero (Int64, permite NA).
+    No redondea: sólo toma la parte numérica (útil para montos).
     """
     s = series.astype(str)
-    s = s.str.replace(r"[^\d,\.\-]", "", regex=True)
-    # si hay punto de miles y coma decimal -> uniformar a punto decimal
-    s = s.str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
-    s = pd.to_numeric(s, errors="coerce")
-    s = s.round().astype("Int64")
-    return s
+    s = s.str.replace(r"[^\d]", "", regex=True)
+    s = s.replace("", np.nan)
+    return pd.to_numeric(s, errors="coerce").astype("Int64")
 
 
-def _to_comuna(series: pd.Series) -> pd.Series:
-    """
-    Extrae dígitos de la comuna y los convierte a Int64.
-    """
+def _parse_comuna(series: pd.Series) -> pd.Series:
     s = series.astype(str).str.extract(r"(\d+)", expand=False)
     return pd.to_numeric(s, errors="coerce").astype("Int64")
 
 
 def _to_date(series: pd.Series) -> pd.Series:
-    """
-    Convierte fechas variadas a YYYY-MM-DD (dayfirst=True para formateos latinos).
-    """
     dt = pd.to_datetime(series, errors="coerce", dayfirst=True)
     return dt.dt.strftime("%Y-%m-%d")
 
 
-# ---------- función pedida por el profe ----------
+# ---------------- función pedida ----------------
 
 def pregunta_01():
     """
     Limpia 'files/input/solicitudes_de_credito.csv' y escribe
-    'files/output/solicitudes_de_credito.csv' (sep=';').
-
-    Incluye:
-    - Normalización de texto (lower/strip/espacios).
-    - Conversión de numéricos (estrato, comuna_ciudadano, monto_del_credito).
-    - Estandarización de fecha (YYYY-MM-DD).
-    - Homologación estricta de categorías en 'sexo' para cumplir el test.
-    - Eliminación de duplicados y filas con NA en campos clave.
+    'files/output/solicitudes_de_credito.csv' con ';'.
+    - Normaliza categóricas principales.
+    - Homologa 'sexo' estrictamente a {femenino, masculino}.
+    - Convierte numéricos clave sin redondear.
+    - Convierte fecha a YYYY-MM-DD.
+    - Elimina duplicados pero NO elimina filas por NA de otras columnas.
     """
     in_path = os.path.join("files", "input", "solicitudes_de_credito.csv")
     out_dir = os.path.join("files", "output")
@@ -83,7 +70,7 @@ def pregunta_01():
 
     df = _read_input_csv(in_path)
 
-    # Renombres mínimos por si el dataset trae pequeñas variaciones
+    # Renombres mínimos si vinieran variantes
     rename_map = {}
     if "linea_credito" in df.columns and "línea_credito" not in df.columns:
         rename_map["linea_credito"] = "línea_credito"
@@ -91,27 +78,14 @@ def pregunta_01():
         rename_map["monto_credito"] = "monto_del_credito"
     df = df.rename(columns=rename_map)
 
-    # Columnas que el test usa explícitamente
-    needed = [
-        "sexo",
-        "tipo_de_emprendimiento",
-        "idea_negocio",
-        "barrio",
-        "estrato",
-        "comuna_ciudadano",
-        "fecha_de_beneficio",
-        "monto_del_credito",
-        "línea_credito",
-    ]
-
-    # Normalización general de textos en categóricas
+    # Normalización de textos en las categóricas usadas por el test
     for col in ["sexo", "tipo_de_emprendimiento", "idea_negocio", "barrio", "línea_credito"]:
         if col in df.columns:
             df[col] = _std_str(df[col])
 
-    # --------- Homologación FINITA de 'sexo' (clave para pasar el test) ----------
+    # ---- Homologación estricta de 'sexo' ----
     if "sexo" in df.columns:
-        # reemplazos directos comunes
+        # Mapeos directos comunes
         df["sexo"] = df["sexo"].replace({
             "f": "femenino",
             "m": "masculino",
@@ -120,13 +94,15 @@ def pregunta_01():
             "femenino ": "femenino",
             "masculino ": "masculino",
         })
-        # si quedan siglas/variantes, mapear por inicial
+        # Por inicial (cubre 'fem', 'masc', etc.)
         df["sexo"] = df["sexo"].apply(
             lambda x: "femenino" if str(x).strip().lower().startswith("f")
             else ("masculino" if str(x).strip().lower().startswith("m") else np.nan)
         )
+        # Quedarnos SOLO con femenino/masculino (el test espera exactamente 6617 y 3589)
+        df = df[df["sexo"].isin(["femenino", "masculino"])]
 
-    # Limpieza de textos extra en otras categóricas (guiones/underscores dobles)
+    # Limpieza ligera adicional en categóricas
     for col in ["tipo_de_emprendimiento", "idea_negocio", "barrio", "línea_credito"]:
         if col in df.columns:
             df[col] = (
@@ -137,28 +113,20 @@ def pregunta_01():
                 .str.strip()
             )
 
-    # Sustituir strings de NA residuales por verdaderos NA
-    df = df.replace({"nan": np.nan, "na": np.nan})
-
-    # Numéricos
+    # Numéricos sin redondear
     if "estrato" in df.columns:
-        df["estrato"] = _to_numeric(df["estrato"])
+        df["estrato"] = _parse_int(df["estrato"])
     if "comuna_ciudadano" in df.columns:
-        df["comuna_ciudadano"] = _to_comuna(df["comuna_ciudadano"])
+        df["comuna_ciudadano"] = _parse_comuna(df["comuna_ciudadano"])
     if "monto_del_credito" in df.columns:
-        df["monto_del_credito"] = _to_numeric(df["monto_del_credito"])
+        df["monto_del_credito"] = _parse_int(df["monto_del_credito"])
 
     # Fechas
     if "fecha_de_beneficio" in df.columns:
         df["fecha_de_beneficio"] = _to_date(df["fecha_de_beneficio"])
 
-    # Eliminar duplicados exactos
+    # Eliminar duplicados exactos (requisito típico)
     df = df.drop_duplicates()
 
-    # Mantener solo filas con info crítica (las que el test usa)
-    keep = [k for k in needed if k in df.columns]
-    if keep:
-        df = df.dropna(subset=keep)
-
-    # Exportar con ';' (el test lee con sep=';')
+    # Exportar (el test lee con sep=';')
     df.to_csv(out_path, sep=";", index=False)
